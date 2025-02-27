@@ -16,6 +16,11 @@ Ce script permet de :
 - Package osc-sdk-python
 - Credentials Outscale configurés
 
+- N'hésitez pas à créer un environnement .venv apres le gitclone avec la commande :
+```bash
+source /home/.../script-routetable/venv/bin/activate
+```
+
 ## Installation
 
 1. Cloner le repository :
