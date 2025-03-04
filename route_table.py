@@ -1,98 +1,160 @@
+import sys
 import json
-from osc_sdk_python import Gateway
+import os
+from datetime import datetime
+sys.dont_write_bytecode = True
 
-# Fonction qui compare deux configurations de route
-def compare_route_configs(ref_route, existing_route):
+from osc_sdk_python import Gateway
+from config import CONFIG
+
+###########################################
+# FONCTIONS DE GESTION DES ROUTES
+###########################################
+
+def get_route_info(route):
     """
-    Compare les attributs d'une route de référence avec une route existante
-    
-    Arguments:
-        ref_route (dict): Route de la table de référence
-        existing_route (dict): Route de la table en cours de vérification
-    
-    Returns:
-        bool: True si les configurations sont identiques, False sinon
+    Analyse une route et retourne ses caractéristiques.
+    - Gère le cas spécial des routes locales
+    - Identifie le type de route (GATEWAY, NAT, etc.)
+    - Extrait les paramètres importants
     """
-    return (ref_route['DestinationIpRange'] == existing_route['DestinationIpRange'] and
-            ref_route['GatewayId'] == existing_route['GatewayId'] and
-            ref_route['State'] == existing_route['State'])
+    # Route locale : cas spécial à traiter en priorité
+    if 'GatewayId' in route and route['GatewayId'] == 'local':
+        return {
+            'type': 'LOCAL',
+            'param_key': 'GatewayId',
+            'target': 'local',
+            'destination': route['DestinationIpRange']
+        }
+
+    # Pour tous les autres types de routes
+    for route_type, info in CONFIG['ROUTES'].items():
+        key = info['key']
+        if key in route and route[key]:
+            return {
+                'type': route_type,
+                'param_key': key,
+                'target': route[key],
+                'destination': route['DestinationIpRange']
+            }
+    return None
+
+def create_route(gateway, table_id, route_info):
+    """
+    Crée une nouvelle route dans la table spécifiée.
+    Utilise les paramètres appropriés selon le type de route.
+    """
+    return gateway.CreateRoute(
+        RouteTableId=table_id,
+        DestinationIpRange=route_info['destination'],
+        **{route_info['param_key']: route_info['target']}
+    )
+
+def process_route(gateway, table_id, route_info, existing_routes, report):
+    """
+    Traite une route individuelle :
+    1. Vérifie si elle existe déjà
+    2. La crée si nécessaire
+    3. Retourne le résultat de l'opération
+    """
+    dest = route_info['destination']
+    exists = any(r['DestinationIpRange'] == dest for r in existing_routes)
+
+    if exists:
+        print(f"✓ {dest} ({route_info['type']})")
+        return {"status": "ok", "info": route_info}
+
+    try:
+        create_route(gateway, table_id, route_info)
+        print(f"+ {dest} ({route_info['type']})")
+        return {"status": "created", "info": route_info}
+    except Exception as e:
+        print(f"! Erreur sur {dest}: {str(e)}")
+        return {"status": "error", "info": route_info, "error": str(e)}
+
+###########################################
+# GESTION DES RAPPORTS
+###########################################
+
+def save_report(report):
+    """
+    Sauvegarde le rapport de synchronisation :
+    - Crée un dossier 'log' si nécessaire
+    - Génère un nom de fichier unique avec timestamp
+    - Sauvegarde au format JSON
+    """
+    log_dir = "log"
+    os.makedirs(log_dir, exist_ok=True)
+    filename = os.path.join(log_dir, f"sync_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
+    
+    with open(filename, 'w') as f:
+        json.dump(report, f, indent=2)
+    return filename
+
+###########################################
+# FONCTION PRINCIPALE
+###########################################
 
 def sync_routes():
     """
-    Fonction principale de synchronisation des tables de routage
-    
-    Processus:
-    1. Se connecte à l'API Outscale
-    2. Récupère la table de référence (rtb-2219d39c)
-    3. Récupère toutes les tables du VPC cible (vpc-28393d55)
-    4. Pour chaque table:
-       - Vérifie chaque route de la référence
-       - Compare les configurations
-       - Crée les routes manquantes
-    5. Affiche un rapport détaillé
+    Fonction principale qui :
+    1. Initialise la connexion et le rapport
+    2. Récupère la table de référence
+    3. Synchronise chaque table du VPC
+    4. Sauvegarde et affiche les résultats
     """
-    
-    # Initialisation de la connexion API Outscale
-    # Utilise les credentials stockés dans ~/.osc/config.json
-    gw = Gateway(**{"profile": "default"})
-    
-    # ====== ÉTAPE 1: Récupération de la table de référence ======
-    # Filtre pour obtenir uniquement la table rtb-2219d39c
-    ref = gw.ReadRouteTables(Filters={"RouteTableIds": ["rtb-2219d39c"]})
-    # Extraction des routes de la table de référence
-    ref_routes = ref['RouteTables'][0]['Routes']
+    # === INITIALISATION ===
+    gateway = Gateway(**{"profile": CONFIG['OSC_PROFILE']})
+    report = {
+        "date": datetime.now().isoformat(),
+        "vpc": CONFIG['TARGET_VPC'],
+        "tables": [],
+        "stats": {"ok": 0, "new": 0, "error": 0}
+    }
 
-    # ====== ÉTAPE 2: Récupération des tables du VPC ======
-    # Filtre pour obtenir toutes les tables du VPC vpc-28393d55
-    tables = gw.ReadRouteTables(Filters={"NetIds": ["vpc-28393d55"]})
-    
-    # ====== ÉTAPE 3: Vérification de chaque table ======
-    for table in tables['RouteTables']:
-        # On saute la table de référence pour éviter de la modifier
-        if table['RouteTableId'] == 'rtb-2219d39c':
+    # === RÉCUPÉRATION DES DONNÉES ===
+    # Table de référence
+    ref_routes = gateway.ReadRouteTables(
+        Filters={"RouteTableIds": [CONFIG['REF_TABLE']]}
+    )['RouteTables'][0]['Routes']
+
+    # Tables du VPC cible
+    vpc_tables = gateway.ReadRouteTables(
+        Filters={"NetIds": [CONFIG['TARGET_VPC']]}
+    )['RouteTables']
+
+    # === TRAITEMENT DES TABLES ===
+    for table in vpc_tables:
+        if table['RouteTableId'] == CONFIG['REF_TABLE']:
             continue
-            
-        print(f"\nVérification de la table {table['RouteTableId']}:")
-        
-        # Pour chaque route dans la table de référence
-        for ref_route in ref_routes:
-            # Recherche si la route existe déjà dans la table cible
-            # Utilise une list comprehension pour filtrer les routes avec la même destination
-            existing_routes = [r for r in table['Routes'] 
-                             if r['DestinationIpRange'] == ref_route['DestinationIpRange']]
-            
-            if existing_routes:
-                # ====== CAS 1: La route existe ======
-                existing_route = existing_routes[0]
-                if not compare_route_configs(ref_route, existing_route):
-                    # La route existe mais avec une configuration différente
-                    # On affiche un warning avec les détails des différences
-                    print(f"⚠️  WARNING: Route {ref_route['DestinationIpRange']} existe mais configuration différente:")
-                    print(f"    Référence: GW={ref_route['GatewayId']}, State={ref_route['State']}")
-                    print(f"    Actuelle : GW={existing_route['GatewayId']}, State={existing_route['State']}")
-                else:
-                    # La route est identique à la référence
-                    print(f"✓ Route {ref_route['DestinationIpRange']} OK")
-            else:
-                # ====== CAS 2: La route n'existe pas ======
-                try:
-                    # Tentative de création de la route manquante
-                    # Utilise les paramètres de la route de référence
-                    gw.CreateRoute(
-                        RouteTableId=table['RouteTableId'],
-                        DestinationIpRange=ref_route['DestinationIpRange'],
-                        GatewayId=ref_route['GatewayId']
-                    )
-                    print(f"+ Route {ref_route['DestinationIpRange']} créée via {ref_route['GatewayId']}")
-                except Exception as e:
-                    # En cas d'erreur lors de la création
-                    print(f"❌ Erreur création route {ref_route['DestinationIpRange']}: {str(e)}")
 
-# Point d'entrée du script
+        print(f"\nTable {table['RouteTableId']}:")
+        table_actions = []
+
+        # Synchronisation des routes
+        for ref_route in ref_routes:
+            route_info = get_route_info(ref_route)
+            if route_info:
+                result = process_route(gateway, table['RouteTableId'], 
+                                    route_info, table['Routes'], report)
+                table_actions.append(result)
+                report["stats"][result["status"] if result["status"] != "created" else "new"] += 1
+
+        report["tables"].append({
+            "id": table['RouteTableId'],
+            "routes": table_actions
+        })
+
+    # === FINALISATION ===
+    # Sauvegarde du rapport
+    filename = save_report(report)
+
+    # Affichage du résumé
+    print(f"\nRésumé:")
+    print(f"✓ Routes OK: {report['stats']['ok']}")
+    print(f"+ Routes créées: {report['stats']['new']}")
+    print(f"! Erreurs: {report['stats']['error']}")
+    print(f"\nRapport sauvegardé: {filename}")
+
 if __name__ == "__main__":
     sync_routes()
-    # Légende des symboles utilisés dans les logs:
-    # ✓ : Route conforme
-    # ⚠️ : Route existe mais différente
-    # + : Route créée
-    # ❌ : Erreur lors de la création
