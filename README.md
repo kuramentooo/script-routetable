@@ -1,46 +1,34 @@
-# Script Route Table
+# Script Route Table Synchronisation
 
-Outil de gestion des tables de routage pour l'infrastructure cloud Outscale.
+Outil de synchronisation des tables de routage Outscale avec une table de référence.
 
 ## Description
 
-Ce script permet de :
-- Lister les tables de routage
-- Récupérer les informations d'une table de routage spécifique
-- Obtenir la table de routage principale d'un VPC
-- Créer de nouvelles routes
+Ce script automatise la gestion des tables de routage en :
+- Vérifiant la conformité avec une table de référence 
+- Identifiant les routes manquantes ou différentes
+- Créant automatiquement les routes manquantes
+- Alertant sur les configurations non conformes
 
 ## Prérequis
 
-- Python 3.8 ou supérieur
-- Package osc-sdk-python
-- Credentials Outscale configurés
+### Système
+- Python 3.8+
+- pip (gestionnaire de paquets Python)
+- Accès à l'API Outscale
 
-- N'hésitez pas à créer un environnement .venv apres le gitclone avec la commande :
-```bash
-source /home/.../script-routetable/venv/bin/activate
-```
-
-## Installation
-
-1. Cloner le repository :
-```bash
-git clone https://git.luminess.eu/cdelaunoy/script-routetable.git
-cd script-routetable
-```
-
-2. Installer les dépendances :
+### Packages Python
 ```bash
 pip install osc-sdk-python
 ```
 
-3. Configurer vos credentials Outscale :
-Créez ou modifiez le fichier `~/.osc/config.json` :
+### Configuration Outscale
+Créez ou modifiez `~/.osc/config.json` :
 ```json
 {
    "default": {
-        "access_key": "ACCESSKEY",
-        "secret_key": "SECRETKEY",
+        "access_key": "VOTRE_ACCESS_KEY",
+        "secret_key": "VOTRE_SECRET_KEY",
         "host": "outscale.com",
         "https": true,
         "method": "POST",
@@ -49,38 +37,75 @@ Créez ou modifiez le fichier `~/.osc/config.json` :
 }
 ```
 
+## Installation
+
+```bash
+git clone https://git.luminess.eu/cdelaunoy/script-routetable.git
+cd script-routetable
+```
+
 ## Utilisation
 
-### Lister les tables de routage
+### Exécution du script
 ```bash
-python route_table.py > route_tables.json
+python route_table.py
 ```
 
-Le script générera un fichier JSON contenant :
-- La liste des tables de routage
-- Les détails de la table de routage principale
-- Les routes associées
+### Interprétation des résultats
 
-### Structure des données
+Le script utilise les symboles suivants dans ses logs :
+- ✓ : Route conforme
+- ⚠️ : Route existe mais configuration différente
+- + : Route créée
+- ❌ : Erreur lors de la création
 
-Les résultats sont sauvegardés dans `route_tables.json` avec la structure suivante :
-```json
-{
-    "first_result": {
-        "RouteTables": [...],
-        "ResponseContext": {...}
-    },
-    "second_result": {
-        "RouteTables": [...],
-        "ResponseContext": {...}
-    }
-}
+### Exemple de sortie
+```
+Vérification de la table rtb-abc123:
+✓ Route 10.0.0.0/16 OK
++ Route 0.0.0.0/0 créée via igw-xyz789
+⚠️ WARNING: Route 192.168.1.0/24 existe mais configuration différente
 ```
 
-## Support
+## Architecture
 
-Pour toute question ou problème, veuillez m'envoyez un Teams ou un Mail.
+### Fichiers principaux
+- `route_table.py` : Script principal
+- `README.md` : Documentation
 
-## Auteur
+### Table de référence
+- ID: rtb-2219d39c
+- VPC: vpc-28393d55
+- Usage: Contient les routes à répliquer
 
-- Clément Delaunoy
+## Dépannage
+
+### Problèmes courants
+
+1. Erreur d'authentification
+```
+Vérifiez vos credentials dans ~/.osc/config.json
+```
+
+2. Route non créée
+```
+Vérifiez que la gateway spécifiée existe et est attachée au VPC
+```
+
+## Support et Contact
+
+- **Questions**: Teams ou email
+- **Maintenance**: Clément Delaunoy
+
+## Changelog
+
+### v1.0.0 (2025)
+- Version initiale
+- Synchronisation automatique des routes
+- Logging détaillé
+- Gestion des erreurs
+
+## Auteur et License
+
+**Créé par**: Clément Delaunoy
+**Usage**: Interne Luminess uniquement
